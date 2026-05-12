@@ -1,0 +1,41 @@
+experiment:
+  name: halfcheetah_td3
+  algorithm: td3_only
+  seed: 0
+  total_steps: 200000
+  output_dir: outputs
+
+env:
+  name: HalfCheetah-v4
+  eval_episodes: 5
+
+network:
+  hidden_dim: 256
+  hidden_layers: 2
+
+td3:
+  batch_size: 128
+  buffer_size: 500000
+  gamma: 0.99
+  tau: 0.005
+  actor_lr: 0.0003
+  critic_lr: 0.0003
+  exploration_noise: 0.1
+  policy_noise: 0.2
+  noise_clip: 0.5
+  policy_delay: 2
+  warmup_steps: 5000
+  update_ratio: 1.0
+
+logging:
+  eval_interval: 5000
+  checkpoint_interval: 10000
+  console_interval: 1000
+
+scheduler:
+  update_interval: 5000
+  enabled: false
+
+ba_ugd_erl:
+  enabled: false
+  exploit_update_ratio: 1.0

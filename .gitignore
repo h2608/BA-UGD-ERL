@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local/editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Training outputs
+outputs/logs/*
+outputs/models/*
+outputs/figures/*
+!outputs/logs/.gitkeep
+!outputs/models/.gitkeep
+!outputs/figures/.gitkeep
+
+# OS files
+Thumbs.db
+.DS_Store
