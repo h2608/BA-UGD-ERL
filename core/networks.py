@@ -68,11 +68,11 @@ class ActorHead(nn.Module):
 
 
 class Actor(nn.Module):
-    """TD3 actor using a backbone plus one head.
+    """Actor using one shared backbone plus a main head and optional EA heads.
 
-    The composition is intentionally compatible with future shared-backbone
-    multi-head actors: BA-UGD-ERL can add more ActorHead modules without
-    changing the main actor action scaling contract.
+    TD3 calls ``forward(obs)`` and uses the main head. BA-UGD-ERL can call
+    ``forward(obs, head_index=i)`` to evaluate an EA head that shares the same
+    state representation but has separate head parameters.
     """
 
     def __init__(
@@ -83,15 +83,22 @@ class Actor(nn.Module):
         action_high: np.ndarray | Iterable[float],
         hidden_dim: int = 256,
         hidden_layers: int = 2,
+        num_ea_heads: int = 0,
     ) -> None:
         super().__init__()
+        if num_ea_heads < 0:
+            raise ValueError("num_ea_heads must be >= 0")
         self.backbone = MLPBackbone(
             obs_dim=obs_dim,
             feature_dim=hidden_dim,
             hidden_dim=hidden_dim,
             hidden_layers=hidden_layers,
         )
-        self.head = ActorHead(hidden_dim, action_dim)
+        self.main_head = ActorHead(hidden_dim, action_dim)
+        self.ea_heads = nn.ModuleList(
+            ActorHead(hidden_dim, action_dim) for _ in range(num_ea_heads)
+        )
+        self.head = self.main_head
 
         low = torch.as_tensor(np.asarray(action_low), dtype=torch.float32)
         high = torch.as_tensor(np.asarray(action_high), dtype=torch.float32)
@@ -102,12 +109,27 @@ class Actor(nn.Module):
         self.register_buffer("action_low", low)
         self.register_buffer("action_high", high)
 
-    def normalized_action(self, obs: torch.Tensor) -> torch.Tensor:
-        features = self.backbone(obs)
-        return self.head(features)
+    @property
+    def num_ea_heads(self) -> int:
+        return len(self.ea_heads)
 
-    def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        return self.normalized_action(obs) * self.action_scale + self.action_bias
+    def _select_head(self, head_index: int | None) -> ActorHead:
+        if head_index is None:
+            return self.main_head
+        if head_index < 0 or head_index >= self.num_ea_heads:
+            raise IndexError(
+                f"EA head index {head_index} out of range for {self.num_ea_heads} heads"
+            )
+        return self.ea_heads[head_index]
+
+    def normalized_action(
+        self, obs: torch.Tensor, head_index: int | None = None
+    ) -> torch.Tensor:
+        features = self.backbone(obs)
+        return self._select_head(head_index)(features)
+
+    def forward(self, obs: torch.Tensor, head_index: int | None = None) -> torch.Tensor:
+        return self.normalized_action(head_index=head_index, obs=obs) * self.action_scale + self.action_bias
 
 
 class TwinCritic(nn.Module):

@@ -11,8 +11,10 @@ import torch
 import yaml
 
 from core.logger import ExperimentLogger
+from core.filter import TrajectoryFilter
 from core.networks import Actor, TwinCritic
-from core.replay_buffer import ReplayBuffer
+from core.replay_buffer import ReplayBuffer, sample_mixed_batch
+from core.scheduler import MODE_TO_ID, SchedulerState, UncertaintyScheduler
 from core.td3_update import TD3Updater
 from core.utils import (
     as_float32_obs,
@@ -43,6 +45,9 @@ def build_td3_components(
     action_dim = int(np.prod(env.action_space.shape))
     network_cfg = config["network"]
     td3_cfg = config["td3"]
+    ba_cfg = config.get("ba_ugd_erl", {})
+    ba_enabled = bool(ba_cfg.get("enabled", False))
+    num_ea_heads = int(ba_cfg.get("num_ea_heads", 0)) if ba_enabled else 0
 
     actor = Actor(
         obs_dim=obs_dim,
@@ -51,6 +56,7 @@ def build_td3_components(
         action_high=env.action_space.high,
         hidden_dim=int(network_cfg["hidden_dim"]),
         hidden_layers=int(network_cfg["hidden_layers"]),
+        num_ea_heads=num_ea_heads,
     ).to(device)
     actor_target = copy.deepcopy(actor).to(device)
 
@@ -70,6 +76,14 @@ def build_td3_components(
         capacity=int(td3_cfg["buffer_size"]),
         device=device,
     )
+    pop_buffer = None
+    if ba_enabled and bool(ba_cfg.get("mixed_sampling", {}).get("enabled", False)):
+        pop_buffer = ReplayBuffer(
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            capacity=int(ba_cfg.get("pop_buffer_size", td3_cfg["buffer_size"])),
+            device=device,
+        )
     updater = TD3Updater(
         actor=actor,
         actor_target=actor_target,
@@ -91,6 +105,7 @@ def build_td3_components(
         "actor_optimizer": actor_optimizer,
         "critic_optimizer": critic_optimizer,
         "replay_buffer": replay_buffer,
+        "pop_buffer": pop_buffer,
         "updater": updater,
         "obs_dim": obs_dim,
         "action_dim": action_dim,
@@ -98,10 +113,15 @@ def build_td3_components(
 
 
 @torch.no_grad()
-def select_action(actor: Actor, obs: np.ndarray, device: torch.device) -> np.ndarray:
+def select_action(
+    actor: Actor,
+    obs: np.ndarray,
+    device: torch.device,
+    head_index: int | None = None,
+) -> np.ndarray:
     actor.eval()
     obs_tensor = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
-    action = actor(obs_tensor).squeeze(0).cpu().numpy()
+    action = actor(obs_tensor, head_index=head_index).squeeze(0).cpu().numpy()
     actor.train()
     return action
 
@@ -144,9 +164,119 @@ def evaluate_actor(
     return float(np.mean(returns)) if returns else float("nan")
 
 
+@torch.no_grad()
+def compute_critic_disagreement(
+    actor: Actor,
+    critic: TwinCritic,
+    replay_buffer: ReplayBuffer,
+    batch_size: int,
+) -> float | None:
+    if not replay_buffer.can_sample(batch_size):
+        return None
+    batch = replay_buffer.sample(batch_size)
+    actions = actor(batch["obs"])
+    q1, q2 = critic(batch["obs"], actions)
+    disagreement = torch.mean(torch.abs(q1 - q2))
+    if not torch.isfinite(disagreement):
+        return None
+    return float(disagreement.detach().cpu().item())
+
+
+def rollout_ea_heads(
+    actor: Actor,
+    env_name: str,
+    seed: int,
+    active_heads: int,
+    episodes_per_head: int,
+    max_rollout_steps: int,
+    noise_std: float,
+    device: torch.device,
+) -> list[dict[str, Any]]:
+    """Roll out EA heads for diagnostics.
+
+    Stage C step 1 only evaluates EA heads. It does not evolve head
+    parameters and does not store the generated transitions.
+    """
+
+    if actor.num_ea_heads == 0:
+        return []
+    rollout_count = min(active_heads, actor.num_ea_heads)
+    results: list[dict[str, Any]] = []
+    for head_index in range(rollout_count):
+        for episode_idx in range(episodes_per_head):
+            env = make_env(env_name, seed=seed + head_index * 1000 + episode_idx)
+            try:
+                obs = reset_env(env, seed=seed + head_index * 1000 + episode_idx)
+                done = False
+                episode_return = 0.0
+                episode_len = 0
+                transitions: list[
+                    tuple[np.ndarray, np.ndarray, float, np.ndarray, bool]
+                ] = []
+                while not done and episode_len < max_rollout_steps:
+                    action = select_action(actor, obs, device, head_index=head_index)
+                    action = add_exploration_noise(action, env.action_space, noise_std)
+                    transition_obs = obs.copy()
+                    next_obs, reward, terminated, truncated, _ = env.step(action)
+                    done = bool(terminated or truncated)
+                    done_for_bootstrap = bool(terminated)
+                    next_obs = as_float32_obs(next_obs)
+                    episode_return += float(reward)
+                    episode_len += 1
+                    transitions.append(
+                        (
+                            transition_obs,
+                            action.copy(),
+                            float(reward),
+                            next_obs.copy(),
+                            done_for_bootstrap,
+                        )
+                    )
+                    obs = next_obs
+                results.append(
+                    {
+                        "head_index": head_index,
+                        "episode_return": episode_return,
+                        "episode_length": episode_len,
+                        "transitions": transitions,
+                    }
+                )
+            finally:
+                env.close()
+    return results
+
+
 def _write_effective_config(config: dict[str, Any], run_dir: Path) -> None:
     with open(run_dir / "config.yaml", "w", encoding="utf-8") as f:
         yaml.safe_dump(config, f, sort_keys=False)
+
+
+def _print_config_summary(config: dict[str, Any], device: torch.device) -> None:
+    experiment_cfg = config["experiment"]
+    td3_cfg = config["td3"]
+    ba_cfg = config.get("ba_ugd_erl", {})
+    summary = {
+        "algorithm": experiment_cfg.get("algorithm"),
+        "env": config["env"]["name"],
+        "seed": experiment_cfg.get("seed"),
+        "total_steps": experiment_cfg.get("total_steps"),
+        "warmup_steps": max(5000, int(td3_cfg["warmup_steps"])),
+        "batch_size": td3_cfg["batch_size"],
+        "update_ratio": td3_cfg.get("update_ratio", 1.0),
+        "device": str(device),
+        "ba_enabled": bool(ba_cfg.get("enabled", False)),
+        "ea_heads": int(ba_cfg.get("num_ea_heads", 0))
+        if bool(ba_cfg.get("enabled", False))
+        else 0,
+        "mixed_sampling": bool(
+            ba_cfg.get("mixed_sampling", {}).get("enabled", False)
+        ),
+        "trajectory_filter": bool(ba_cfg.get("filter", {}).get("enabled", False)),
+        "scheduler": bool(config.get("scheduler", {}).get("enabled", False)),
+    }
+    print("Training config summary:", flush=True)
+    for key, value in summary.items():
+        print(f"  {key}: {value}", flush=True)
 
 
 def run_env_smoke(config: dict[str, Any]) -> dict[str, Any]:
@@ -181,8 +311,12 @@ def run_training(
     overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     config = deep_update(config, overrides)
-    if config["experiment"].get("algorithm") != "td3_only":
-        raise NotImplementedError("Stage A/B only implements algorithm: td3_only")
+    algorithm = config["experiment"].get("algorithm")
+    if algorithm not in {"td3_only", "ba_ugd_erl"}:
+        raise NotImplementedError(f"Unsupported algorithm: {algorithm}")
+    ba_enabled = algorithm == "ba_ugd_erl" and bool(
+        config.get("ba_ugd_erl", {}).get("enabled", False)
+    )
 
     seed = int(config["experiment"].get("seed", 0))
     set_seed(seed)
@@ -195,10 +329,27 @@ def run_training(
     update_ratio = float(td3_cfg.get("update_ratio", 1.0))
     eval_interval = int(logging_cfg["eval_interval"])
     checkpoint_interval = int(logging_cfg["checkpoint_interval"])
+    ba_cfg = config.get("ba_ugd_erl", {})
+    ea_cfg = ba_cfg.get("ea", {})
+    ea_rollout_enabled = ba_enabled and bool(ea_cfg.get("rollout_enabled", False))
+    ea_rollout_interval = int(ea_cfg.get("rollout_interval", 5000))
+    ea_active_heads = int(ea_cfg.get("active_heads", ba_cfg.get("num_ea_heads", 0)))
+    ea_episodes_per_head = int(ea_cfg.get("rollout_episodes_per_head", 1))
+    ea_max_rollout_steps = int(ea_cfg.get("max_rollout_steps", 1000))
+    ea_noise_std = float(ea_cfg.get("exploration_noise", 0.1))
+    mixed_cfg = ba_cfg.get("mixed_sampling", {})
+    mixed_sampling_enabled = ba_enabled and bool(mixed_cfg.get("enabled", False))
+    pop_fraction = float(mixed_cfg.get("pop_fraction", 0.5))
+    filter_cfg = ba_cfg.get("filter", {})
+    filter_enabled = ba_enabled and bool(filter_cfg.get("enabled", False))
+    scheduler_cfg = config.get("scheduler", {})
+    scheduler_enabled = ba_enabled and bool(scheduler_cfg.get("enabled", False))
+    scheduler_update_interval = int(scheduler_cfg.get("update_interval", 5000))
 
     run_name = f"{config['experiment']['name']}_seed{seed}_{int(time.time())}"
     dirs = ensure_output_dirs(config["experiment"].get("output_dir", "outputs"), run_name)
     _write_effective_config(config, dirs["logs"])
+    _print_config_summary(config, device)
 
     env = make_env(config["env"]["name"], seed=seed)
     logger = ExperimentLogger(
@@ -212,6 +363,38 @@ def run_training(
     episode_idx = 0
     update_accumulator = 0.0
     update_count = 0
+    last_ea_mean_return: float | None = None
+    last_ea_active_heads = 0
+    last_filter_acceptance_rate: float | None = None
+    last_scheduler_state: SchedulerState | None = None
+    current_mode = "TD3" if not ba_enabled else "Hybrid"
+    current_mode_id = MODE_TO_ID.get(current_mode, -1)
+    current_update_ratio = update_ratio
+    current_pop_fraction = pop_fraction
+    current_active_heads = ea_active_heads
+    trajectory_filter = (
+        TrajectoryFilter(
+            warmup_episodes=int(filter_cfg.get("warmup_episodes", 5)),
+            return_margin=float(filter_cfg.get("return_margin", 100.0)),
+        )
+        if filter_enabled
+        else None
+    )
+    scheduler = (
+        UncertaintyScheduler(
+            config=scheduler_cfg,
+            num_ea_heads=int(ba_cfg.get("num_ea_heads", 0)),
+        )
+        if scheduler_enabled
+        else None
+    )
+    if scheduler is not None:
+        resources = scheduler.current_resources()
+        current_mode = scheduler.mode
+        current_mode_id = MODE_TO_ID[current_mode]
+        current_update_ratio = resources.update_ratio
+        current_pop_fraction = resources.pop_fraction
+        current_active_heads = resources.active_ea_heads
 
     try:
         components = build_td3_components(config, env, device)
@@ -222,6 +405,7 @@ def run_training(
         actor_optimizer = components["actor_optimizer"]
         critic_optimizer = components["critic_optimizer"]
         replay_buffer: ReplayBuffer = components["replay_buffer"]
+        pop_buffer: ReplayBuffer | None = components["pop_buffer"]
         updater: TD3Updater = components["updater"]
 
         obs = reset_env(env, seed=seed)
@@ -254,20 +438,94 @@ def run_training(
                 episode_return = 0.0
                 episode_len = 0
 
-            if step > warmup_steps and replay_buffer.can_sample(batch_size):
-                update_accumulator += update_ratio
+            if step > warmup_steps:
+                update_accumulator += current_update_ratio
                 while update_accumulator >= 1.0:
-                    batch = replay_buffer.sample(batch_size)
+                    if mixed_sampling_enabled:
+                        batch = sample_mixed_batch(
+                            replay_buffer,
+                            pop_buffer,
+                            batch_size=batch_size,
+                            pop_fraction=current_pop_fraction,
+                        )
+                    else:
+                        batch = (
+                            replay_buffer.sample(batch_size)
+                            if replay_buffer.can_sample(batch_size)
+                            else None
+                        )
+                    if batch is None:
+                        break
                     update_result = updater.update(batch)
                     last_critic_loss = update_result.critic_loss
                     last_actor_loss = update_result.actor_loss
                     update_count += 1
                     update_accumulator -= 1.0
 
+            if ea_rollout_enabled and step % ea_rollout_interval == 0:
+                ea_results = rollout_ea_heads(
+                    actor=actor,
+                    env_name=config["env"]["name"],
+                    seed=seed + 20000 + step,
+                    active_heads=current_active_heads,
+                    episodes_per_head=ea_episodes_per_head,
+                    max_rollout_steps=ea_max_rollout_steps,
+                    noise_std=ea_noise_std,
+                    device=device,
+                )
+                if ea_results:
+                    returns = [item["episode_return"] for item in ea_results]
+                    last_ea_mean_return = float(np.mean(returns))
+                    last_ea_active_heads = len({item["head_index"] for item in ea_results})
+                    stored_transitions = 0
+                    accepted_trajectories = 0
+                    last_threshold: float | None = None
+                    rolling_best: float | None = None
+                    if pop_buffer is not None:
+                        for item in ea_results:
+                            accepted = True
+                            if trajectory_filter is not None:
+                                decision = trajectory_filter.evaluate(
+                                    float(item["episode_return"])
+                                )
+                                accepted = decision.accepted
+                                last_threshold = decision.threshold
+                                rolling_best = decision.rolling_best
+                            if accepted:
+                                accepted_trajectories += 1
+                                for transition in item["transitions"]:
+                                    pop_buffer.add(*transition)
+                                    stored_transitions += 1
+                    if trajectory_filter is None:
+                        accepted_trajectories = len(ea_results)
+                        last_filter_acceptance_rate = 1.0
+                    else:
+                        last_filter_acceptance_rate = trajectory_filter.acceptance_rate
+                    logger.scalar("ea/mean_return", last_ea_mean_return, step)
+                    logger.scalar("ea/active_heads", last_ea_active_heads, step)
+                    logger.scalar("ea/stored_transitions", stored_transitions, step)
+                    logger.scalar("filter/accepted_trajectories", accepted_trajectories, step)
+                    logger.scalar("filter/acceptance_rate", last_filter_acceptance_rate, step)
+                    logger.scalar("filter/threshold", last_threshold, step)
+                    logger.scalar("filter/rolling_best", rolling_best, step)
+                    for item in ea_results:
+                        logger.scalar(
+                            f"ea/head_{item['head_index']}_return",
+                            item["episode_return"],
+                            step,
+                        )
+
             scalar_values = {
-                "train/replay_buffer_size": len(replay_buffer),
+                "train/B_rl_size": len(replay_buffer),
                 "train/update_count": update_count,
+                "train/current_update_ratio": current_update_ratio,
             }
+            if pop_buffer is not None:
+                scalar_values["train/B_pop_size"] = len(pop_buffer)
+            if last_filter_acceptance_rate is not None:
+                scalar_values["filter/acceptance_rate"] = last_filter_acceptance_rate
+            if ba_enabled:
+                scalar_values["scheduler/mode_id"] = current_mode_id
             if last_critic_loss is not None:
                 scalar_values["loss/critic"] = last_critic_loss
             if last_actor_loss is not None:
@@ -283,6 +541,47 @@ def run_training(
                     device=device,
                 )
                 logger.scalar("eval/return", last_eval_return, step)
+                if scheduler is not None:
+                    scheduler.record_eval_return(last_eval_return)
+
+            if scheduler is not None and step % scheduler_update_interval == 0:
+                disagreement = compute_critic_disagreement(
+                    actor=actor,
+                    critic=critic,
+                    replay_buffer=replay_buffer,
+                    batch_size=min(256, batch_size),
+                )
+                last_scheduler_state = scheduler.update(step, disagreement)
+                resources = scheduler.current_resources()
+                current_mode = last_scheduler_state.mode
+                current_mode_id = last_scheduler_state.mode_id
+                current_update_ratio = resources.update_ratio
+                current_pop_fraction = resources.pop_fraction
+                current_active_heads = resources.active_ea_heads
+                logger.scalar(
+                    "scheduler/uncertainty_score",
+                    last_scheduler_state.uncertainty_score,
+                    step,
+                )
+                logger.scalar("scheduler/mode_id", current_mode_id, step)
+                logger.scalar(
+                    "scheduler/critic_disagreement",
+                    last_scheduler_state.critic_disagreement,
+                    step,
+                )
+                logger.scalar(
+                    "scheduler/learning_progress",
+                    last_scheduler_state.learning_progress,
+                    step,
+                )
+                logger.scalar(
+                    "scheduler/progress_need",
+                    last_scheduler_state.progress_need,
+                    step,
+                )
+                logger.scalar("scheduler/update_ratio", current_update_ratio, step)
+                logger.scalar("scheduler/pop_fraction", current_pop_fraction, step)
+                logger.scalar("scheduler/active_ea_heads", current_active_heads, step)
 
             if step % checkpoint_interval == 0 or step == total_steps:
                 checkpoint_path = dirs["models"] / f"step_{step}.pt"
@@ -332,6 +631,11 @@ def run_training(
                     "critic_loss": last_critic_loss,
                     "actor_loss": last_actor_loss,
                     "B_rl": len(replay_buffer),
+                    "B_pop": len(pop_buffer) if pop_buffer is not None else None,
+                    "ea_return": last_ea_mean_return,
+                    "ea_heads": last_ea_active_heads if last_ea_active_heads else None,
+                    "filter_accept": last_filter_acceptance_rate,
+                    "mode": current_mode if ba_enabled else None,
                     "updates": update_count,
                 },
             )
@@ -346,6 +650,12 @@ def run_training(
             "updates": update_count,
             "episodes": episode_idx,
             "last_eval_return": last_eval_return,
+            "last_ea_mean_return": last_ea_mean_return,
+            "last_filter_acceptance_rate": last_filter_acceptance_rate,
+            "current_mode": current_mode if ba_enabled else None,
+            "scheduler_uncertainty": last_scheduler_state.uncertainty_score
+            if last_scheduler_state is not None
+            else None,
             "device": str(device),
         }
     finally:

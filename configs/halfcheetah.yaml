@@ -35,7 +35,46 @@ logging:
 scheduler:
   update_interval: 5000
   enabled: false
+  initial_mode: Hybrid
+  ema_alpha: 0.8
+  disagreement_weight: 0.5
+  progress_weight: 0.5
+  progress_scale: 10.0
+  explore_enter: 0.65
+  explore_exit: 0.55
+  exploit_enter: 0.35
+  exploit_exit: 0.45
+  min_mode_steps: 5000
+  modes:
+    Explore:
+      active_ea_heads: 4
+      update_ratio: 0.5
+      pop_fraction: 0.7
+    Hybrid:
+      active_ea_heads: 2
+      update_ratio: 1.0
+      pop_fraction: 0.5
+    Exploit:
+      active_ea_heads: 1
+      update_ratio: 1.0
+      pop_fraction: 0.2
 
 ba_ugd_erl:
   enabled: false
+  num_ea_heads: 4
+  pop_buffer_size: 500000
+  mixed_sampling:
+    enabled: false
+    pop_fraction: 0.5
+  ea:
+    rollout_enabled: false
+    rollout_interval: 5000
+    rollout_episodes_per_head: 1
+    active_heads: 4
+    exploration_noise: 0.1
+    max_rollout_steps: 1000
+  filter:
+    enabled: false
+    warmup_episodes: 5
+    return_margin: 100.0
   exploit_update_ratio: 1.0

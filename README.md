@@ -1,6 +1,6 @@
 # BA-UGD-ERL
 
-Minimal research prototype for Budget-Aware Uncertainty-Guided Evolutionary Reinforcement Learning. Stage A/B currently implements the project skeleton and a TD3-only baseline for MuJoCo continuous-control tasks. BA-UGD-ERL scheduler, EA heads, dual replay buffers, and trajectory filtering are intentionally not implemented yet.
+Minimal research prototype for Budget-Aware Uncertainty-Guided Evolutionary Reinforcement Learning. The current checked-in baseline implements project setup and a TD3-only MuJoCo training path. Stage C adds BA-UGD-ERL features incrementally.
 
 ## Environment
 
@@ -55,6 +55,30 @@ TD3-only smoke test:
 python scripts/smoke_test.py --stage td3 --config configs/hopper.yaml --total_steps 6000
 ```
 
+BA-UGD-ERL EA rollout smoke test:
+
+```bash
+python scripts/smoke_test.py --stage ba_rollout --config configs/hopper.yaml --total_steps 6000
+```
+
+BA-UGD-ERL mixed replay smoke test:
+
+```bash
+python scripts/smoke_test.py --stage ba_mixed --config configs/hopper.yaml --total_steps 6000
+```
+
+BA-UGD-ERL trajectory filter smoke test:
+
+```bash
+python scripts/smoke_test.py --stage ba_filter --config configs/hopper.yaml --total_steps 6000
+```
+
+BA-UGD-ERL scheduler smoke test:
+
+```bash
+python scripts/smoke_test.py --stage ba_scheduler --config configs/hopper.yaml --total_steps 6000
+```
+
 The TD3 smoke test automatically uses `eval_interval=1000` and one eval episode while keeping `warmup_steps >= 5000`.
 
 ## Training
@@ -77,6 +101,8 @@ Evaluate the latest checkpoint:
 python scripts/eval.py --config configs/hopper.yaml --checkpoint outputs/models/latest.pt
 ```
 
+`outputs/models/latest.pt` is a convenience checkpoint for the most recent completed run. Each run also keeps its own checkpoint under `outputs/models/<run_name>/`.
+
 View TensorBoard logs:
 
 ```bash
@@ -90,18 +116,19 @@ tensorboard --logdir outputs/logs
 - Batch size: `128`
 - Hidden size: `256`
 - Replay capacity: `500000`
+- EA heads reserved for BA-UGD-ERL: `4`
 - Eval interval: `5000` in normal training, `1000` in smoke tests
-- Scheduler update interval: reserved as `5000`, disabled in Stage A/B
+- Scheduler update interval: reserved as `5000`, disabled until the scheduler stage
 
 ## Project Layout
 
 ```text
 .
-├─ configs/
-├─ core/
-├─ scripts/
-├─ outputs/
-└─ tests/
+|-- configs/
+|-- core/
+|-- scripts/
+|-- outputs/
+`-- tests/
 ```
 
 `core/training.py` is the single training loop used by both `scripts/train.py` and `scripts/smoke_test.py`.

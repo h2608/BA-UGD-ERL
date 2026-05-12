@@ -5,6 +5,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+*.egg-info/
 
 # Virtual environments
 .venv/
@@ -24,6 +25,11 @@ outputs/figures/*
 !outputs/logs/.gitkeep
 !outputs/models/.gitkeep
 !outputs/figures/.gitkeep
+runs/
+*.log
+*.pt
+*.pth
+*.ckpt
 
 # OS files
 Thumbs.db
