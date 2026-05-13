@@ -105,6 +105,8 @@ Default variants:
 
 Use `--dry_run` to print the planned runs without executing them. Results are appended as JSONL under `outputs/results/`.
 
+`ba_static_switch` is implemented through the same discrete scheduler update interval used by the dynamic scheduler. With the current `update_interval=5000`, the realized mode fraction in short runs is approximate; for example, a nominal 25% Explore / 75% Exploit switch appears as about 30% / 70% in 50k-step runs.
+
 ## Training
 
 Run TD3-only training:

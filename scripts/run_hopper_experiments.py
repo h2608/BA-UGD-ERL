@@ -63,8 +63,9 @@ SCHEDULER_CANDIDATES: dict[str, dict[str, float | int]] = {
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run Hopper comparison experiments.")
+    parser = argparse.ArgumentParser(description="Run MuJoCo comparison experiments.")
     parser.add_argument("--config", type=str, default="configs/hopper.yaml")
+    parser.add_argument("--run_prefix", type=str, default=None)
     parser.add_argument("--total_steps", type=int, default=100000)
     parser.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     parser.add_argument("--variants", nargs="+", default=VARIANTS, choices=VARIANTS)
@@ -96,6 +97,7 @@ def ba_overrides(
     console_interval: int,
     max_rollout_steps: int,
     filter_margin: float,
+    run_prefix: str,
 ) -> dict[str, Any]:
     filter_enabled = not variant.endswith("_no_filter")
     scheduler_strategy = "static_switch" if "static_switch" in variant else "uncertainty"
@@ -107,7 +109,7 @@ def ba_overrides(
     return {
         "experiment": {
             "algorithm": "ba_ugd_erl",
-            "name": f"hopper_{variant}",
+            "name": f"{run_prefix}_{variant}",
             "seed": seed,
             "total_steps": total_steps,
         },
@@ -158,11 +160,12 @@ def td3_overrides(
     eval_interval: int,
     checkpoint_interval: int,
     console_interval: int,
+    run_prefix: str,
 ) -> dict[str, Any]:
     return {
         "experiment": {
             "algorithm": "td3_only",
-            "name": "hopper_td3_only",
+            "name": f"{run_prefix}_td3_only",
             "seed": seed,
             "total_steps": total_steps,
         },
@@ -178,6 +181,7 @@ def td3_overrides(
 
 
 def build_overrides(args: argparse.Namespace, variant: str, seed: int) -> dict[str, Any]:
+    run_prefix = args.run_prefix
     if variant == "td3_only":
         return td3_overrides(
             seed=seed,
@@ -186,6 +190,7 @@ def build_overrides(args: argparse.Namespace, variant: str, seed: int) -> dict[s
             eval_interval=args.eval_interval,
             checkpoint_interval=args.checkpoint_interval,
             console_interval=args.console_interval,
+            run_prefix=run_prefix,
         )
     return ba_overrides(
         variant=variant,
@@ -197,15 +202,18 @@ def build_overrides(args: argparse.Namespace, variant: str, seed: int) -> dict[s
         console_interval=args.console_interval,
         max_rollout_steps=args.max_rollout_steps,
         filter_margin=args.filter_margin,
+        run_prefix=run_prefix,
     )
 
 
 def main() -> None:
     args = parse_args()
     config = load_config(args.config)
+    if args.run_prefix is None:
+        args.run_prefix = str(config["env"]["name"]).replace("-v4", "").lower()
     output_path = Path(
         args.output_jsonl
-        or f"outputs/results/hopper_comparison_{int(time.time())}.jsonl"
+        or f"outputs/results/{args.run_prefix}_comparison_{int(time.time())}.jsonl"
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
 

@@ -277,6 +277,21 @@ def _write_json(path: Path, payload: Any) -> None:
         json.dump(payload, f, default=_json_default, ensure_ascii=False, indent=2)
 
 
+def _eval_auc(eval_history: list[dict[str, float]]) -> float | None:
+    if len(eval_history) == 0:
+        return None
+    if len(eval_history) == 1:
+        return float(eval_history[0]["return"])
+    area = 0.0
+    for left, right in zip(eval_history[:-1], eval_history[1:]):
+        width = right["step"] - left["step"]
+        area += width * (left["return"] + right["return"]) / 2.0
+    total_width = eval_history[-1]["step"] - eval_history[0]["step"]
+    if total_width <= 0:
+        return float(eval_history[-1]["return"])
+    return area / total_width
+
+
 def _print_config_summary(config: dict[str, Any], device: torch.device) -> None:
     experiment_cfg = config["experiment"]
     td3_cfg = config["td3"]
@@ -409,6 +424,7 @@ def run_training(
     mode_step_counts: dict[str, int] = {}
     scheduler_trace: list[dict[str, Any]] = []
     mode_switches: list[dict[str, Any]] = []
+    eval_history: list[dict[str, float]] = []
     trajectory_filter = (
         TrajectoryFilter(
             warmup_episodes=int(filter_cfg.get("warmup_episodes", 5)),
@@ -615,6 +631,7 @@ def run_training(
                     device=device,
                 )
                 logger.scalar("eval/return", last_eval_return, step)
+                eval_history.append({"step": step, "return": last_eval_return})
                 if scheduler is not None:
                     scheduler.record_eval_return(last_eval_return)
 
@@ -761,6 +778,10 @@ def run_training(
             "episodes": episode_idx,
             "wall_clock_sec": wall_clock_sec,
             "last_eval_return": last_eval_return,
+            "final_eval_return": last_eval_return,
+            "eval_history": eval_history,
+            "eval_auc": _eval_auc(eval_history),
+            "update_count": update_count,
             "final_B_rl_size": len(replay_buffer),
             "final_B_pop_size": len(pop_buffer) if pop_buffer is not None else 0,
             "last_ea_mean_return": last_ea_mean_return,
