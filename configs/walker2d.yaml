@@ -35,6 +35,8 @@ logging:
 scheduler:
   update_interval: 5000
   enabled: false
+  strategy: uncertainty
+  explore_fraction: 0.25
   initial_mode: Hybrid
   ema_alpha: 0.8
   disagreement_weight: 0.5
@@ -77,4 +79,8 @@ ba_ugd_erl:
     enabled: false
     warmup_episodes: 5
     return_margin: 100.0
+  evolution:
+    enabled: false
+    interval: 5000
+    mutation_std: 0.05
   exploit_update_ratio: 1.0

@@ -22,9 +22,11 @@ env/
 outputs/logs/*
 outputs/models/*
 outputs/figures/*
+outputs/results/*
 !outputs/logs/.gitkeep
 !outputs/models/.gitkeep
 !outputs/figures/.gitkeep
+!outputs/results/.gitkeep
 runs/
 *.log
 *.pt

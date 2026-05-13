@@ -26,6 +26,38 @@ class SchedulerState:
     progress_need: float
 
 
+def build_mode_resources(
+    config: dict[str, Any], num_ea_heads: int
+) -> dict[str, ModeResources]:
+    defaults = {
+        "Explore": {
+            "active_ea_heads": num_ea_heads,
+            "update_ratio": 0.5,
+            "pop_fraction": 0.7,
+        },
+        "Hybrid": {
+            "active_ea_heads": max(1, min(2, num_ea_heads)),
+            "update_ratio": 1.0,
+            "pop_fraction": 0.5,
+        },
+        "Exploit": {
+            "active_ea_heads": 1 if num_ea_heads > 0 else 0,
+            "update_ratio": 1.0,
+            "pop_fraction": 0.2,
+        },
+    }
+    configured = config.get("modes", {})
+    resources: dict[str, ModeResources] = {}
+    for mode, default in defaults.items():
+        values = {**default, **configured.get(mode, {})}
+        resources[mode] = ModeResources(
+            active_ea_heads=max(0, min(int(values["active_ea_heads"]), num_ea_heads)),
+            update_ratio=float(values["update_ratio"]),
+            pop_fraction=float(np.clip(values["pop_fraction"], 0.0, 1.0)),
+        )
+    return resources
+
+
 class UncertaintyScheduler:
     """EMA-smoothed three-state scheduler for BA-UGD-ERL."""
 
@@ -47,40 +79,7 @@ class UncertaintyScheduler:
         self.ema_u: float | None = None
         self.ema_disagreement: float | None = None
         self.eval_returns: list[float] = []
-        self.mode_resources = self._build_mode_resources(config, num_ea_heads)
-
-    def _build_mode_resources(
-        self, config: dict[str, Any], num_ea_heads: int
-    ) -> dict[str, ModeResources]:
-        defaults = {
-            "Explore": {
-                "active_ea_heads": num_ea_heads,
-                "update_ratio": 0.5,
-                "pop_fraction": 0.7,
-            },
-            "Hybrid": {
-                "active_ea_heads": max(1, min(2, num_ea_heads)),
-                "update_ratio": 1.0,
-                "pop_fraction": 0.5,
-            },
-            "Exploit": {
-                "active_ea_heads": 1 if num_ea_heads > 0 else 0,
-                "update_ratio": 1.0,
-                "pop_fraction": 0.2,
-            },
-        }
-        configured = config.get("modes", {})
-        resources: dict[str, ModeResources] = {}
-        for mode, default in defaults.items():
-            values = {**default, **configured.get(mode, {})}
-            resources[mode] = ModeResources(
-                active_ea_heads=max(
-                    0, min(int(values["active_ea_heads"]), num_ea_heads)
-                ),
-                update_ratio=float(values["update_ratio"]),
-                pop_fraction=float(np.clip(values["pop_fraction"], 0.0, 1.0)),
-            )
-        return resources
+        self.mode_resources = build_mode_resources(config, num_ea_heads)
 
     def record_eval_return(self, eval_return: float | None) -> None:
         if eval_return is not None and np.isfinite(eval_return):
@@ -154,4 +153,36 @@ class UncertaintyScheduler:
             critic_disagreement=disagreement_value,
             learning_progress=progress,
             progress_need=progress_need,
+        )
+
+
+class StaticSwitchScheduler:
+    """Fixed Explore-to-Exploit staged scheduler for ablation runs."""
+
+    def __init__(
+        self, config: dict[str, Any], num_ea_heads: int, total_steps: int
+    ) -> None:
+        self.total_steps = max(1, int(total_steps))
+        self.explore_fraction = float(config.get("explore_fraction", 0.25))
+        self.mode = "Explore"
+        self.mode_resources = build_mode_resources(config, num_ea_heads)
+
+    def record_eval_return(self, eval_return: float | None) -> None:
+        return
+
+    def current_resources(self) -> ModeResources:
+        return self.mode_resources[self.mode]
+
+    def update(
+        self, step: int, critic_disagreement: float | None = None
+    ) -> SchedulerState:
+        progress = step / self.total_steps
+        self.mode = "Explore" if progress <= self.explore_fraction else "Exploit"
+        return SchedulerState(
+            mode=self.mode,
+            mode_id=MODE_TO_ID[self.mode],
+            uncertainty_score=float(progress),
+            critic_disagreement=critic_disagreement,
+            learning_progress=None,
+            progress_need=0.0,
         )

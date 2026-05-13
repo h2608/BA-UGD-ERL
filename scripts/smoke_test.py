@@ -23,6 +23,7 @@ def parse_args() -> argparse.Namespace:
             "ba_mixed",
             "ba_filter",
             "ba_scheduler",
+            "ba_evolution",
         ],
         required=True,
     )
@@ -147,7 +148,7 @@ def main() -> None:
                 },
             },
         )
-    else:
+    elif args.stage == "ba_scheduler":
         total_steps = args.total_steps if args.total_steps is not None else 6000
         result = run_training(
             config,
@@ -172,6 +173,46 @@ def main() -> None:
                         "enabled": True,
                         "warmup_episodes": 5,
                         "return_margin": 100.0,
+                    },
+                    "ea": {
+                        "rollout_enabled": True,
+                        "rollout_interval": 1000,
+                        "rollout_episodes_per_head": 1,
+                        "active_heads": 4,
+                        "max_rollout_steps": 100,
+                    },
+                },
+            },
+        )
+    else:
+        total_steps = args.total_steps if args.total_steps is not None else 6000
+        result = run_training(
+            config,
+            overrides={
+                "experiment": {
+                    "algorithm": "ba_ugd_erl",
+                    "name": "hopper_ba_evolution_smoke",
+                    "total_steps": total_steps,
+                },
+                "env": {"eval_episodes": 1},
+                "logging": {
+                    "eval_interval": 1000,
+                    "checkpoint_interval": max(1000, total_steps),
+                    "console_interval": 1000,
+                },
+                "ba_ugd_erl": {
+                    "enabled": True,
+                    "num_ea_heads": 4,
+                    "mixed_sampling": {"enabled": True, "pop_fraction": 0.5},
+                    "filter": {
+                        "enabled": True,
+                        "warmup_episodes": 5,
+                        "return_margin": 100.0,
+                    },
+                    "evolution": {
+                        "enabled": True,
+                        "interval": 1000,
+                        "mutation_std": 0.05,
                     },
                     "ea": {
                         "rollout_enabled": True,

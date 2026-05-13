@@ -79,7 +79,31 @@ BA-UGD-ERL scheduler smoke test:
 python scripts/smoke_test.py --stage ba_scheduler --config configs/hopper.yaml --total_steps 6000
 ```
 
+BA-UGD-ERL head evolution smoke test:
+
+```bash
+python scripts/smoke_test.py --stage ba_evolution --config configs/hopper.yaml --total_steps 6000
+```
+
 The TD3 smoke test automatically uses `eval_interval=1000` and one eval episode while keeping `warmup_steps >= 5000`.
+
+## Hopper Comparison Experiments
+
+The first comparison suite is limited to Hopper and 100k training steps per run:
+
+```bash
+python scripts/run_hopper_experiments.py --total_steps 100000 --seeds 0 1 2
+```
+
+Default variants:
+
+- `td3_only`
+- `ba_static_switch`
+- `ba_static_switch_no_filter`
+- `ba_scheduler`
+- `ba_scheduler_no_filter`
+
+Use `--dry_run` to print the planned runs without executing them. Results are appended as JSONL under `outputs/results/`.
 
 ## Training
 

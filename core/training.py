@@ -10,11 +10,17 @@ import numpy as np
 import torch
 import yaml
 
+from core.evolution import EvolutionResult, HeadEvolution
 from core.logger import ExperimentLogger
 from core.filter import TrajectoryFilter
 from core.networks import Actor, TwinCritic
 from core.replay_buffer import ReplayBuffer, sample_mixed_batch
-from core.scheduler import MODE_TO_ID, SchedulerState, UncertaintyScheduler
+from core.scheduler import (
+    MODE_TO_ID,
+    SchedulerState,
+    StaticSwitchScheduler,
+    UncertaintyScheduler,
+)
 from core.td3_update import TD3Updater
 from core.utils import (
     as_float32_obs,
@@ -272,7 +278,9 @@ def _print_config_summary(config: dict[str, Any], device: torch.device) -> None:
             ba_cfg.get("mixed_sampling", {}).get("enabled", False)
         ),
         "trajectory_filter": bool(ba_cfg.get("filter", {}).get("enabled", False)),
+        "evolution": bool(ba_cfg.get("evolution", {}).get("enabled", False)),
         "scheduler": bool(config.get("scheduler", {}).get("enabled", False)),
+        "scheduler_strategy": config.get("scheduler", {}).get("strategy", "none"),
     }
     print("Training config summary:", flush=True)
     for key, value in summary.items():
@@ -342,8 +350,12 @@ def run_training(
     pop_fraction = float(mixed_cfg.get("pop_fraction", 0.5))
     filter_cfg = ba_cfg.get("filter", {})
     filter_enabled = ba_enabled and bool(filter_cfg.get("enabled", False))
+    evolution_cfg = ba_cfg.get("evolution", {})
+    evolution_enabled = ba_enabled and bool(evolution_cfg.get("enabled", False))
+    evolution_interval = int(evolution_cfg.get("interval", ea_rollout_interval))
     scheduler_cfg = config.get("scheduler", {})
     scheduler_enabled = ba_enabled and bool(scheduler_cfg.get("enabled", False))
+    scheduler_strategy = str(scheduler_cfg.get("strategy", "uncertainty"))
     scheduler_update_interval = int(scheduler_cfg.get("update_interval", 5000))
 
     run_name = f"{config['experiment']['name']}_seed{seed}_{int(time.time())}"
@@ -366,6 +378,7 @@ def run_training(
     last_ea_mean_return: float | None = None
     last_ea_active_heads = 0
     last_filter_acceptance_rate: float | None = None
+    last_evolution_result: EvolutionResult | None = None
     last_scheduler_state: SchedulerState | None = None
     current_mode = "TD3" if not ba_enabled else "Hybrid"
     current_mode_id = MODE_TO_ID.get(current_mode, -1)
@@ -380,12 +393,24 @@ def run_training(
         if filter_enabled
         else None
     )
-    scheduler = (
-        UncertaintyScheduler(
-            config=scheduler_cfg,
-            num_ea_heads=int(ba_cfg.get("num_ea_heads", 0)),
-        )
-        if scheduler_enabled
+    scheduler = None
+    if scheduler_enabled:
+        if scheduler_strategy == "static_switch":
+            scheduler = StaticSwitchScheduler(
+                config=scheduler_cfg,
+                num_ea_heads=int(ba_cfg.get("num_ea_heads", 0)),
+                total_steps=total_steps,
+            )
+        elif scheduler_strategy == "uncertainty":
+            scheduler = UncertaintyScheduler(
+                config=scheduler_cfg,
+                num_ea_heads=int(ba_cfg.get("num_ea_heads", 0)),
+            )
+        else:
+            raise ValueError(f"Unknown scheduler strategy: {scheduler_strategy}")
+    evolver = (
+        HeadEvolution(mutation_std=float(evolution_cfg.get("mutation_std", 0.05)))
+        if evolution_enabled
         else None
     )
     if scheduler is not None:
@@ -514,6 +539,24 @@ def run_training(
                             item["episode_return"],
                             step,
                         )
+                    if evolver is not None and step % evolution_interval == 0:
+                        last_evolution_result = evolver.evolve(actor, ea_results)
+                        if last_evolution_result.evolved:
+                            logger.scalar(
+                                "evolution/elite_head",
+                                last_evolution_result.elite_head,
+                                step,
+                            )
+                            logger.scalar(
+                                "evolution/elite_fitness",
+                                last_evolution_result.elite_fitness,
+                                step,
+                            )
+                            logger.scalar(
+                                "evolution/mutated_heads",
+                                len(last_evolution_result.mutated_heads),
+                                step,
+                            )
 
             scalar_values = {
                 "train/B_rl_size": len(replay_buffer),
@@ -526,6 +569,10 @@ def run_training(
                 scalar_values["filter/acceptance_rate"] = last_filter_acceptance_rate
             if ba_enabled:
                 scalar_values["scheduler/mode_id"] = current_mode_id
+            if last_evolution_result is not None and last_evolution_result.evolved:
+                scalar_values["evolution/elite_fitness"] = (
+                    last_evolution_result.elite_fitness
+                )
             if last_critic_loss is not None:
                 scalar_values["loss/critic"] = last_critic_loss
             if last_actor_loss is not None:
@@ -636,6 +683,9 @@ def run_training(
                     "ea_heads": last_ea_active_heads if last_ea_active_heads else None,
                     "filter_accept": last_filter_acceptance_rate,
                     "mode": current_mode if ba_enabled else None,
+                    "elite": last_evolution_result.elite_head
+                    if last_evolution_result and last_evolution_result.evolved
+                    else None,
                     "updates": update_count,
                 },
             )
@@ -653,6 +703,12 @@ def run_training(
             "last_ea_mean_return": last_ea_mean_return,
             "last_filter_acceptance_rate": last_filter_acceptance_rate,
             "current_mode": current_mode if ba_enabled else None,
+            "last_evolution_elite": last_evolution_result.elite_head
+            if last_evolution_result and last_evolution_result.evolved
+            else None,
+            "last_evolution_mutated_heads": last_evolution_result.mutated_heads
+            if last_evolution_result and last_evolution_result.evolved
+            else [],
             "scheduler_uncertainty": last_scheduler_state.uncertainty_score
             if last_scheduler_state is not None
             else None,

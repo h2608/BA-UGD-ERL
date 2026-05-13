@@ -11,9 +11,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from core.networks import Actor, TwinCritic
+from core.evolution import HeadEvolution
 from core.filter import TrajectoryFilter
 from core.replay_buffer import ReplayBuffer, sample_mixed_batch
-from core.scheduler import UncertaintyScheduler
+from core.scheduler import StaticSwitchScheduler, UncertaintyScheduler
 from core.utils import load_config
 
 
@@ -102,6 +103,47 @@ def test_scheduler_outputs_mode() -> None:
     assert scheduler.current_resources().active_ea_heads >= 1
 
 
+def test_static_switch_scheduler() -> None:
+    scheduler = StaticSwitchScheduler(
+        {"explore_fraction": 0.25},
+        num_ea_heads=4,
+        total_steps=100,
+    )
+    assert scheduler.update(step=10).mode == "Explore"
+    assert scheduler.update(step=50).mode == "Exploit"
+
+
+def test_evolution_only_mutates_ea_heads() -> None:
+    actor = Actor(
+        obs_dim=4,
+        action_dim=2,
+        action_low=np.array([-1.0, -1.0], dtype=np.float32),
+        action_high=np.array([1.0, 1.0], dtype=np.float32),
+        hidden_dim=16,
+        hidden_layers=1,
+        num_ea_heads=3,
+    )
+    backbone_before = {
+        key: value.detach().clone() for key, value in actor.backbone.state_dict().items()
+    }
+    main_before = {
+        key: value.detach().clone() for key, value in actor.main_head.state_dict().items()
+    }
+    result = HeadEvolution(mutation_std=0.1).evolve(
+        actor,
+        [
+            {"head_index": 0, "episode_return": 1.0},
+            {"head_index": 1, "episode_return": 3.0},
+            {"head_index": 2, "episode_return": 2.0},
+        ],
+    )
+    assert result.evolved
+    for key, value in actor.backbone.state_dict().items():
+        assert torch.equal(value, backbone_before[key])
+    for key, value in actor.main_head.state_dict().items():
+        assert torch.equal(value, main_before[key])
+
+
 if __name__ == "__main__":
     test_config_loads()
     test_network_shapes()
@@ -109,4 +151,6 @@ if __name__ == "__main__":
     test_mixed_sampling_fallback()
     test_trajectory_filter()
     test_scheduler_outputs_mode()
+    test_static_switch_scheduler()
+    test_evolution_only_mutates_ea_heads()
     print("minimal tests passed")
