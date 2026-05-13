@@ -35,6 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint_interval", type=int, default=50000)
     parser.add_argument("--console_interval", type=int, default=5000)
     parser.add_argument("--max_rollout_steps", type=int, default=1000)
+    parser.add_argument("--filter_margin", type=float, default=20.0)
     parser.add_argument("--max_runs", type=int, default=None)
     parser.add_argument("--dry_run", action="store_true")
     parser.add_argument(
@@ -56,6 +57,7 @@ def ba_overrides(
     checkpoint_interval: int,
     console_interval: int,
     max_rollout_steps: int,
+    filter_margin: float,
 ) -> dict[str, Any]:
     filter_enabled = not variant.endswith("_no_filter")
     scheduler_strategy = "static_switch" if "static_switch" in variant else "uncertainty"
@@ -85,7 +87,7 @@ def ba_overrides(
             "filter": {
                 "enabled": filter_enabled,
                 "warmup_episodes": 5,
-                "return_margin": 100.0,
+                "return_margin": filter_margin,
             },
             "evolution": {
                 "enabled": True,
@@ -149,6 +151,7 @@ def build_overrides(args: argparse.Namespace, variant: str, seed: int) -> dict[s
         checkpoint_interval=args.checkpoint_interval,
         console_interval=args.console_interval,
         max_rollout_steps=args.max_rollout_steps,
+        filter_margin=args.filter_margin,
     )
 
 

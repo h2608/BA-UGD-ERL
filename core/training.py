@@ -385,6 +385,7 @@ def run_training(
     current_update_ratio = update_ratio
     current_pop_fraction = pop_fraction
     current_active_heads = ea_active_heads
+    mode_step_counts: dict[str, int] = {}
     trajectory_filter = (
         TrajectoryFilter(
             warmup_episodes=int(filter_cfg.get("warmup_episodes", 5)),
@@ -435,6 +436,9 @@ def run_training(
 
         obs = reset_env(env, seed=seed)
         for step in range(1, total_steps + 1):
+            if ba_enabled:
+                mode_step_counts[current_mode] = mode_step_counts.get(current_mode, 0) + 1
+
             if step <= warmup_steps:
                 action = env.action_space.sample().astype(np.float32)
             else:
@@ -690,6 +694,9 @@ def run_training(
                 },
             )
 
+        mode_fraction = {
+            mode: count / total_steps for mode, count in mode_step_counts.items()
+        }
         return {
             "run_name": run_name,
             "log_dir": str(dirs["logs"]),
@@ -700,9 +707,13 @@ def run_training(
             "updates": update_count,
             "episodes": episode_idx,
             "last_eval_return": last_eval_return,
+            "final_B_rl_size": len(replay_buffer),
+            "final_B_pop_size": len(pop_buffer) if pop_buffer is not None else 0,
             "last_ea_mean_return": last_ea_mean_return,
             "last_filter_acceptance_rate": last_filter_acceptance_rate,
             "current_mode": current_mode if ba_enabled else None,
+            "mode_step_counts": mode_step_counts,
+            "mode_fraction": mode_fraction,
             "last_evolution_elite": last_evolution_result.elite_head
             if last_evolution_result and last_evolution_result.evolved
             else None,
