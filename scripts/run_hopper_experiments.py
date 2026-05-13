@@ -21,7 +21,45 @@ VARIANTS = [
     "ba_static_switch_no_filter",
     "ba_scheduler",
     "ba_scheduler_no_filter",
+    "ba_scheduler_easy_exploit",
+    "ba_scheduler_easy_exploit_no_filter",
+    "ba_scheduler_disagreement_dominant",
+    "ba_scheduler_disagreement_dominant_no_filter",
 ]
+
+
+SCHEDULER_CANDIDATES: dict[str, dict[str, float | int]] = {
+    "default": {
+        "explore_enter": 0.65,
+        "explore_exit": 0.55,
+        "exploit_enter": 0.35,
+        "exploit_exit": 0.45,
+        "min_mode_steps": 5000,
+        "progress_scale": 10.0,
+        "disagreement_weight": 0.5,
+        "progress_weight": 0.5,
+    },
+    "easy_exploit": {
+        "explore_enter": 0.80,
+        "explore_exit": 0.70,
+        "exploit_enter": 0.60,
+        "exploit_exit": 0.70,
+        "min_mode_steps": 2500,
+        "progress_scale": 50.0,
+        "disagreement_weight": 0.2,
+        "progress_weight": 0.8,
+    },
+    "disagreement_dominant": {
+        "explore_enter": 0.55,
+        "explore_exit": 0.48,
+        "exploit_enter": 0.35,
+        "exploit_exit": 0.45,
+        "min_mode_steps": 2500,
+        "progress_scale": 10.0,
+        "disagreement_weight": 0.75,
+        "progress_weight": 0.25,
+    },
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -61,6 +99,11 @@ def ba_overrides(
 ) -> dict[str, Any]:
     filter_enabled = not variant.endswith("_no_filter")
     scheduler_strategy = "static_switch" if "static_switch" in variant else "uncertainty"
+    scheduler_params = SCHEDULER_CANDIDATES["default"]
+    if "easy_exploit" in variant:
+        scheduler_params = SCHEDULER_CANDIDATES["easy_exploit"]
+    elif "disagreement_dominant" in variant:
+        scheduler_params = SCHEDULER_CANDIDATES["disagreement_dominant"]
     return {
         "experiment": {
             "algorithm": "ba_ugd_erl",
@@ -79,6 +122,8 @@ def ba_overrides(
             "strategy": scheduler_strategy,
             "update_interval": 5000,
             "explore_fraction": 0.25,
+            "initial_mode": "Hybrid",
+            **scheduler_params,
         },
         "ba_ugd_erl": {
             "enabled": True,
