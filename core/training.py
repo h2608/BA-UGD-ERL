@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import time
 from pathlib import Path
 from typing import Any
@@ -257,6 +258,25 @@ def _write_effective_config(config: dict[str, Any], run_dir: Path) -> None:
         yaml.safe_dump(config, f, sort_keys=False)
 
 
+def _json_default(value: Any) -> Any:
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, Path):
+        return str(value)
+    return value
+
+
+def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row, default=_json_default, ensure_ascii=False) + "\n")
+
+
+def _write_json(path: Path, payload: Any) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, default=_json_default, ensure_ascii=False, indent=2)
+
+
 def _print_config_summary(config: dict[str, Any], device: torch.device) -> None:
     experiment_cfg = config["experiment"]
     td3_cfg = config["td3"]
@@ -364,6 +384,7 @@ def run_training(
     _print_config_summary(config, device)
 
     env = make_env(config["env"]["name"], seed=seed)
+    wall_clock_start = time.perf_counter()
     logger = ExperimentLogger(
         dirs["logs"], console_interval=int(logging_cfg.get("console_interval", 1000))
     )
@@ -386,6 +407,8 @@ def run_training(
     current_pop_fraction = pop_fraction
     current_active_heads = ea_active_heads
     mode_step_counts: dict[str, int] = {}
+    scheduler_trace: list[dict[str, Any]] = []
+    mode_switches: list[dict[str, Any]] = []
     trajectory_filter = (
         TrajectoryFilter(
             warmup_episodes=int(filter_cfg.get("warmup_episodes", 5)),
@@ -602,6 +625,7 @@ def run_training(
                     replay_buffer=replay_buffer,
                     batch_size=min(256, batch_size),
                 )
+                previous_mode = current_mode
                 last_scheduler_state = scheduler.update(step, disagreement)
                 resources = scheduler.current_resources()
                 current_mode = last_scheduler_state.mode
@@ -633,6 +657,29 @@ def run_training(
                 logger.scalar("scheduler/update_ratio", current_update_ratio, step)
                 logger.scalar("scheduler/pop_fraction", current_pop_fraction, step)
                 logger.scalar("scheduler/active_ea_heads", current_active_heads, step)
+                trace_row = {
+                    "step": step,
+                    "mode": current_mode,
+                    "mode_id": current_mode_id,
+                    "uncertainty_score": last_scheduler_state.uncertainty_score,
+                    "critic_disagreement": last_scheduler_state.critic_disagreement,
+                    "learning_progress": last_scheduler_state.learning_progress,
+                    "progress_need": last_scheduler_state.progress_need,
+                    "update_ratio": current_update_ratio,
+                    "pop_fraction": current_pop_fraction,
+                    "active_ea_heads": current_active_heads,
+                    "eval_return": last_eval_return,
+                }
+                scheduler_trace.append(trace_row)
+                if current_mode != previous_mode:
+                    mode_switches.append(
+                        {
+                            "step": step,
+                            "from": previous_mode,
+                            "to": current_mode,
+                            "uncertainty_score": last_scheduler_state.uncertainty_score,
+                        }
+                    )
 
             if step % checkpoint_interval == 0 or step == total_steps:
                 checkpoint_path = dirs["models"] / f"step_{step}.pt"
@@ -694,6 +741,12 @@ def run_training(
                 },
             )
 
+        wall_clock_sec = time.perf_counter() - wall_clock_start
+        scheduler_trace_path = dirs["logs"] / "scheduler_trace.jsonl"
+        mode_switches_path = dirs["logs"] / "mode_switches.json"
+        if scheduler is not None:
+            _write_jsonl(scheduler_trace_path, scheduler_trace)
+            _write_json(mode_switches_path, mode_switches)
         mode_fraction = {
             mode: count / total_steps for mode, count in mode_step_counts.items()
         }
@@ -706,6 +759,7 @@ def run_training(
             "total_steps": total_steps,
             "updates": update_count,
             "episodes": episode_idx,
+            "wall_clock_sec": wall_clock_sec,
             "last_eval_return": last_eval_return,
             "final_B_rl_size": len(replay_buffer),
             "final_B_pop_size": len(pop_buffer) if pop_buffer is not None else 0,
@@ -714,6 +768,13 @@ def run_training(
             "current_mode": current_mode if ba_enabled else None,
             "mode_step_counts": mode_step_counts,
             "mode_fraction": mode_fraction,
+            "mode_switches": mode_switches,
+            "scheduler_trace_path": str(scheduler_trace_path)
+            if scheduler is not None
+            else None,
+            "mode_switches_path": str(mode_switches_path)
+            if scheduler is not None
+            else None,
             "last_evolution_elite": last_evolution_result.elite_head
             if last_evolution_result and last_evolution_result.evolved
             else None,
