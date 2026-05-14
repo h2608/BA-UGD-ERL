@@ -1,6 +1,6 @@
 experiment:
-  name: walker2d_td3
-  algorithm: td3_only
+  name: walker2d_ba_scheduler_easy_exploit
+  algorithm: ba_ugd_erl
   seed: 0
   total_steps: 200000
   output_dir: outputs
@@ -34,19 +34,19 @@ logging:
 
 scheduler:
   update_interval: 5000
-  enabled: false
+  enabled: true
   strategy: uncertainty
   explore_fraction: 0.25
   initial_mode: Hybrid
   ema_alpha: 0.8
-  disagreement_weight: 0.5
-  progress_weight: 0.5
-  progress_scale: 10.0
-  explore_enter: 0.65
-  explore_exit: 0.55
-  exploit_enter: 0.35
-  exploit_exit: 0.45
-  min_mode_steps: 5000
+  disagreement_weight: 0.2
+  progress_weight: 0.8
+  progress_scale: 50.0
+  explore_enter: 0.80
+  explore_exit: 0.70
+  exploit_enter: 0.60
+  exploit_exit: 0.70
+  min_mode_steps: 2500
   modes:
     Explore:
       active_ea_heads: 4
@@ -62,25 +62,25 @@ scheduler:
       pop_fraction: 0.2
 
 ba_ugd_erl:
-  enabled: false
+  enabled: true
   num_ea_heads: 4
   pop_buffer_size: 500000
   mixed_sampling:
-    enabled: false
+    enabled: true
     pop_fraction: 0.5
   ea:
-    rollout_enabled: false
+    rollout_enabled: true
     rollout_interval: 5000
     rollout_episodes_per_head: 1
     active_heads: 4
     exploration_noise: 0.1
     max_rollout_steps: 1000
   filter:
-    enabled: false
+    enabled: true
     warmup_episodes: 5
-    return_margin: 100.0
+    return_margin: 20.0
   evolution:
-    enabled: false
+    enabled: true
     interval: 5000
     mutation_std: 0.05
   exploit_update_ratio: 1.0

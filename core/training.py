@@ -296,6 +296,10 @@ def _print_config_summary(config: dict[str, Any], device: torch.device) -> None:
     experiment_cfg = config["experiment"]
     td3_cfg = config["td3"]
     ba_cfg = config.get("ba_ugd_erl", {})
+    ba_enabled = (
+        str(experiment_cfg.get("algorithm", "td3_only")) == "ba_ugd_erl"
+        and bool(ba_cfg.get("enabled", False))
+    )
     summary = {
         "algorithm": experiment_cfg.get("algorithm"),
         "env": config["env"]["name"],
@@ -305,16 +309,17 @@ def _print_config_summary(config: dict[str, Any], device: torch.device) -> None:
         "batch_size": td3_cfg["batch_size"],
         "update_ratio": td3_cfg.get("update_ratio", 1.0),
         "device": str(device),
-        "ba_enabled": bool(ba_cfg.get("enabled", False)),
-        "ea_heads": int(ba_cfg.get("num_ea_heads", 0))
-        if bool(ba_cfg.get("enabled", False))
-        else 0,
-        "mixed_sampling": bool(
+        "ba_enabled": ba_enabled,
+        "ea_heads": int(ba_cfg.get("num_ea_heads", 0)) if ba_enabled else 0,
+        "mixed_sampling": ba_enabled and bool(
             ba_cfg.get("mixed_sampling", {}).get("enabled", False)
         ),
-        "trajectory_filter": bool(ba_cfg.get("filter", {}).get("enabled", False)),
-        "evolution": bool(ba_cfg.get("evolution", {}).get("enabled", False)),
-        "scheduler": bool(config.get("scheduler", {}).get("enabled", False)),
+        "trajectory_filter": ba_enabled
+        and bool(ba_cfg.get("filter", {}).get("enabled", False)),
+        "evolution": ba_enabled
+        and bool(ba_cfg.get("evolution", {}).get("enabled", False)),
+        "scheduler": ba_enabled
+        and bool(config.get("scheduler", {}).get("enabled", False)),
         "scheduler_strategy": config.get("scheduler", {}).get("strategy", "none"),
     }
     print("Training config summary:", flush=True)

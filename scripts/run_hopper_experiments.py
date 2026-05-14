@@ -18,13 +18,8 @@ from core.utils import load_config
 VARIANTS = [
     "td3_only",
     "ba_static_switch",
-    "ba_static_switch_no_filter",
-    "ba_scheduler",
-    "ba_scheduler_no_filter",
     "ba_scheduler_easy_exploit",
     "ba_scheduler_easy_exploit_no_filter",
-    "ba_scheduler_disagreement_dominant",
-    "ba_scheduler_disagreement_dominant_no_filter",
 ]
 
 
@@ -49,16 +44,6 @@ SCHEDULER_CANDIDATES: dict[str, dict[str, float | int]] = {
         "disagreement_weight": 0.2,
         "progress_weight": 0.8,
     },
-    "disagreement_dominant": {
-        "explore_enter": 0.55,
-        "explore_exit": 0.48,
-        "exploit_enter": 0.35,
-        "exploit_exit": 0.45,
-        "min_mode_steps": 2500,
-        "progress_scale": 10.0,
-        "disagreement_weight": 0.75,
-        "progress_weight": 0.25,
-    },
 }
 
 
@@ -81,7 +66,7 @@ def parse_args() -> argparse.Namespace:
         "--output_jsonl",
         type=str,
         default=None,
-        help="Defaults to outputs/results/hopper_comparison_<timestamp>.jsonl",
+        help="Defaults to outputs/results/<env_prefix>_comparison_<timestamp>.jsonl",
     )
     return parser.parse_args()
 
@@ -104,8 +89,6 @@ def ba_overrides(
     scheduler_params = SCHEDULER_CANDIDATES["default"]
     if "easy_exploit" in variant:
         scheduler_params = SCHEDULER_CANDIDATES["easy_exploit"]
-    elif "disagreement_dominant" in variant:
-        scheduler_params = SCHEDULER_CANDIDATES["disagreement_dominant"]
     return {
         "experiment": {
             "algorithm": "ba_ugd_erl",

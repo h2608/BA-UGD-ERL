@@ -20,7 +20,11 @@ from core.utils import load_config
 
 def test_config_loads() -> None:
     config = load_config(ROOT / "configs" / "hopper.yaml")
-    assert config["experiment"]["algorithm"] == "td3_only"
+    assert config["experiment"]["algorithm"] == "ba_ugd_erl"
+    assert config["ba_ugd_erl"]["enabled"]
+    assert config["ba_ugd_erl"]["filter"]["enabled"]
+    assert config["scheduler"]["enabled"]
+    assert config["scheduler"]["exploit_enter"] == 0.60
     assert config["td3"]["warmup_steps"] >= 5000
 
 

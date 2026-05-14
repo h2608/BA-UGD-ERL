@@ -1,6 +1,6 @@
 # BA-UGD-ERL
 
-Minimal research prototype for Budget-Aware Uncertainty-Guided Evolutionary Reinforcement Learning. The current checked-in baseline implements project setup and a TD3-only MuJoCo training path. Stage C adds BA-UGD-ERL features incrementally.
+Minimal research prototype for Budget-Aware Uncertainty-Guided Evolutionary Reinforcement Learning. The current default training path is BA-UGD-ERL with the `ba_scheduler_easy_exploit` scheduler and trajectory filtering, with TD3-only retained as a baseline.
 
 ## Environment
 
@@ -87,29 +87,31 @@ python scripts/smoke_test.py --stage ba_evolution --config configs/hopper.yaml -
 
 The TD3 smoke test automatically uses `eval_interval=1000` and one eval episode while keeping `warmup_steps >= 5000`.
 
-## Hopper Comparison Experiments
+## Main Comparison Experiments
 
-The first comparison suite is limited to Hopper and 100k training steps per run:
+The main comparison suite is currently fixed to Hopper-v4 and HalfCheetah-v4, 100k training steps per run, and seeds 0, 1, 2:
 
 ```bash
-python scripts/run_hopper_experiments.py --total_steps 100000 --seeds 0 1 2
+python scripts/run_hopper_experiments.py --config configs/hopper.yaml --total_steps 100000 --seeds 0 1 2
+python scripts/run_hopper_experiments.py --config configs/halfcheetah.yaml --total_steps 100000 --seeds 0 1 2
 ```
 
 Default variants:
 
 - `td3_only`
 - `ba_static_switch`
-- `ba_static_switch_no_filter`
-- `ba_scheduler`
-- `ba_scheduler_no_filter`
+- `ba_scheduler_easy_exploit`
+- `ba_scheduler_easy_exploit_no_filter`
 
 Use `--dry_run` to print the planned runs without executing them. Results are appended as JSONL under `outputs/results/`.
 
-`ba_static_switch` is implemented through the same discrete scheduler update interval used by the dynamic scheduler. With the current `update_interval=5000`, the realized mode fraction in short runs is approximate; for example, a nominal 25% Explore / 75% Exploit switch appears as about 30% / 70% in 50k-step runs.
+`ba_scheduler_easy_exploit` with trajectory filtering is the current main BA-UGD-ERL method. `td3_only`, `ba_static_switch`, and `ba_scheduler_easy_exploit_no_filter` are the fixed main comparison groups.
+
+`ba_static_switch` is implemented through the same discrete scheduler update interval used by the dynamic scheduler. With the current `update_interval=5000`, the realized mode fraction is approximate; for example, a nominal 25% Explore / 75% Exploit switch appears as about 30% / 70% in 50k-100k step runs. Do not report it as a strict continuous 25% / 75% split.
 
 ## Training
 
-Run TD3-only training:
+Run the current main BA-UGD-ERL method:
 
 ```bash
 python scripts/train.py --config configs/hopper.yaml
@@ -137,14 +139,16 @@ tensorboard --logdir outputs/logs
 
 ## Current Defaults
 
-- Algorithm: `td3_only`
+- Algorithm: `ba_ugd_erl`
+- Main method: `ba_scheduler_easy_exploit` with trajectory filtering
 - Warmup steps: `5000`
 - Batch size: `128`
 - Hidden size: `256`
 - Replay capacity: `500000`
-- EA heads reserved for BA-UGD-ERL: `4`
+- EA heads: `4`
+- Trajectory filter margin: `20.0`
 - Eval interval: `5000` in normal training, `1000` in smoke tests
-- Scheduler update interval: reserved as `5000`, disabled until the scheduler stage
+- Scheduler update interval: `5000`
 
 ## Project Layout
 

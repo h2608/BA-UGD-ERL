@@ -42,13 +42,19 @@ def main() -> None:
         result = run_training(
             config,
             overrides={
-                "experiment": {"total_steps": total_steps},
+                "experiment": {
+                    "algorithm": "td3_only",
+                    "name": "hopper_td3_smoke",
+                    "total_steps": total_steps,
+                },
                 "env": {"eval_episodes": 1},
                 "logging": {
                     "eval_interval": 1000,
                     "checkpoint_interval": max(1000, total_steps),
                     "console_interval": 1000,
                 },
+                "scheduler": {"enabled": False},
+                "ba_ugd_erl": {"enabled": False},
             },
         )
     elif args.stage == "ba_rollout":
